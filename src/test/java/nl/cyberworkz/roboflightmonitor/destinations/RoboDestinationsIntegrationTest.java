@@ -61,7 +61,6 @@ public class RoboDestinationsIntegrationTest {
 		response = handler.proxy(request, lambdaContext);
 		String responseBody = response.getBody().toString();
 		
-		
 		assertTrue(responseBody.contains("destinations processed"));
 		
 	}

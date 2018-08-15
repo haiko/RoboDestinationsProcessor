@@ -3,6 +3,8 @@ package nl.cyberworkz.roboflightmonitor.destinations;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.URL;
 import java.net.URLDecoder;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -11,6 +13,8 @@ import java.util.List;
 
 import javax.annotation.PostConstruct;
 
+import org.apache.http.NameValuePair;
+import org.apache.http.client.utils.URLEncodedUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,6 +24,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
@@ -63,6 +68,8 @@ public class DestinationsProcesService {
 
 	private DynamoDB db;
 
+	private URI baseUri;
+
 	@PostConstruct
 	public void init() {
 		HttpHeaders headers = new HttpHeaders();
@@ -75,7 +82,7 @@ public class DestinationsProcesService {
 	@Autowired
 	private AmazonDynamoDB dynamoDBClient;
 
-	public String processDestinations() throws BadRequestException, UnsupportedEncodingException {
+	public String processDestinations() throws BadRequestException, UnsupportedEncodingException, URISyntaxException {
 		List<Destination> destinations = getDestinations();
 
 		saveDestinations(destinations);
@@ -88,7 +95,9 @@ public class DestinationsProcesService {
 		for (Destination destination : destinations) {
 
 			Item item = new Item().withPrimaryKey("iata", destination.getIata()).with("city", destination.getCity())
-					.with("country", destination.getCountry());
+					.with("country", destination.getCountry())
+					.with("airportName_EN", StringUtils.hasText(destination.getPublicName().getEnglish())? destination.getPublicName().getEnglish(): "EMPTY")
+					.with("airportName_NL", StringUtils.hasText(destination.getPublicName().getDutch())? destination.getPublicName().getDutch():"EMPTY");
 
 			PutItemOutcome outcome = db.getTable(this.tableName).putItem(item);
 
@@ -96,7 +105,7 @@ public class DestinationsProcesService {
 		}
 	}
 
-	private List<Destination> getDestinations() throws BadRequestException, UnsupportedEncodingException {
+	private List<Destination> getDestinations() throws BadRequestException, UnsupportedEncodingException, URISyntaxException {
 		URI uri = UriComponentsBuilder.fromUriString(baseUrl + destinationsResource).queryParam("app_id", apiId)
 				.queryParam("app_key", apiKey).queryParam("sort", "+publicName").build().toUri();
 
@@ -120,7 +129,7 @@ public class DestinationsProcesService {
 
 	@SuppressWarnings("unchecked")
 	private List<Destination> process(ResponseEntity<String> responseEntity, List<Destination> destinations)
-			throws UnsupportedEncodingException {
+			throws UnsupportedEncodingException, URISyntaxException {
 
 		String linksObject = responseEntity.getHeaders().get("link").get(0);
 		HashMap<String, String> links = convertTolinks(linksObject);
@@ -130,23 +139,42 @@ public class DestinationsProcesService {
 		// read next page
 		if (links.containsKey("next")) {
 			LOG.debug("next uri:" + links.get("next"));
-			ResponseEntity<String> nextResponseEntity = restTemplate.exchange(links.get("next"), HttpMethod.GET,
+			URI next = new URI(links.get("next"));
+			
+			URI uri = getPagedUri(next);
+			LOG.debug("paged uri:" + uri.toString());
+
+			ResponseEntity<String> nextResponseEntity = restTemplate.exchange(uri, HttpMethod.GET,
 					headersEntity, String.class);
 			LOG.debug("response date:" + responseEntity.getHeaders().get("date"));
 			LOG.debug("destinations size:" + destinations.size());
 			process(nextResponseEntity, destinations);
 		} else if (links.containsKey("last")){
 			// process last link
-			ResponseEntity<String> lastResponseEntity = restTemplate.exchange(links.get("last"), HttpMethod.GET,
+			URI last = new URI(links.get("last"));
+			
+			ResponseEntity<String> lastResponseEntity = restTemplate.exchange(getPagedUri(last), HttpMethod.GET,
 					headersEntity, String.class);
 			destinations = convertToDestinations(lastResponseEntity.getBody(), destinations);
 
 			LOG.debug("last response date:" + responseEntity.getHeaders().get("date"));
-		}
-		
-			
+		}	
 
 		return destinations;
+	}
+
+	private URI getPagedUri(URI uri) {
+		List<NameValuePair> params = URLEncodedUtils.parse(uri, "UTF-8");
+		String pageValue = "";
+		for (NameValuePair param : params) {
+			if (param.getName().equals("page")) {
+				pageValue = param.getValue();
+			}
+		}
+
+		return UriComponentsBuilder.fromUriString(baseUrl + destinationsResource).queryParam("app_id", apiId)
+				.queryParam("app_key", apiKey).queryParam("sort", "+publicName").queryParam("page", pageValue).build()
+				.toUri();
 	}
 
 	private HashMap<String, String> convertTolinks(String linksObject) throws UnsupportedEncodingException {
@@ -163,7 +191,7 @@ public class DestinationsProcesService {
 
 			// get value
 			String valueRaw = keyValue[0].trim();
-			String value = URLDecoder.decode(valueRaw.substring(1, valueRaw.length() - 1), "UTF-8");
+			String value = URLDecoder.decode(valueRaw.substring(1, valueRaw.length() - 1), "UTF-8").replaceAll("\\s", "+");
 
 			linkMap.put(key, value);
 		}
@@ -173,8 +201,9 @@ public class DestinationsProcesService {
 
 	private List<Destination> convertToDestinations(String body, List<Destination> destinations) {
 		try {
-			 mapper.readValue(body, DestinationsResponse.class).getDestinations()
-							.stream().filter(d -> d.getCity() != null).filter(d -> d.getIata() != null).forEachOrdered(destinations::add);
+			mapper.readValue(body, DestinationsResponse.class).getDestinations().stream()
+					.filter(d -> d.getCity() != null).filter(d -> d.getIata() != null)
+					.forEachOrdered(destinations::add);
 		} catch (IOException e) {
 			LOG.error(e.getMessage());
 		}

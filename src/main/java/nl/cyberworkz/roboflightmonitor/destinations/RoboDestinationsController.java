@@ -1,6 +1,7 @@
 package nl.cyberworkz.roboflightmonitor.destinations;
 
 import java.io.UnsupportedEncodingException;
+import java.net.URISyntaxException;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -20,7 +21,7 @@ public class RoboDestinationsController {
 	private DestinationsProcesService destinationsProcesService;
 	
 	@RequestMapping(method=RequestMethod.GET)
-	public ResponseEntity<String> processDestinations() throws BadRequestException, UnsupportedEncodingException {
+	public ResponseEntity<String> processDestinations() throws BadRequestException, UnsupportedEncodingException, URISyntaxException {
 		
 		String number = destinationsProcesService.processDestinations();
 		
